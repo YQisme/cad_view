@@ -12,13 +12,37 @@
       <template v-else-if="dxfData">
         <section class="panel">
           <div class="panel-title">
-            <label>DXF 文件</label>
+            <label>图纸文件</label>
             <button type="button" class="link" @click="reloadFileList">刷新列表</button>
           </div>
           <select v-model="currentFile" @change="loadDxf">
             <option v-for="f in files" :key="f" :value="f">{{ f }}</option>
           </select>
           <p v-if="fileListHint" class="file-list-hint">{{ fileListHint }}</p>
+
+          <div class="upload-block">
+            <label class="upload-btn">
+              <input
+                ref="fileInputRef"
+                type="file"
+                accept=".dxf,.dwg"
+                class="upload-input"
+                :disabled="uploading"
+                @change="onFileSelected"
+              />
+              {{ uploading ? '上传中…' : '上传 DXF / DWG' }}
+            </label>
+            <label v-if="converterAvailable" class="upload-option">
+              <input v-model="autoConvertDwg" type="checkbox" :disabled="uploading" />
+              <span>DWG 自动转为 DXF</span>
+            </label>
+            <p v-else class="upload-warn">
+              未检测到 DWG 转换器，仅可上传 DXF。安装
+              <a href="https://www.opendesign.com/guestfiles/oda_file_converter" target="_blank" rel="noopener">ODA File Converter</a>
+              后可自动转换 DWG。
+            </p>
+            <p v-if="uploadHint" class="file-list-hint">{{ uploadHint }}</p>
+          </div>
         </section>
 
         <section class="panel stats" v-if="dxfData.stats">
@@ -126,7 +150,12 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import DxfCanvas from './components/DxfCanvas.vue'
 import EyeToggle from './components/EyeToggle.vue'
-import { fetchDxfData, fetchFileList } from './api/dxf.js'
+import {
+  fetchConverterStatus,
+  fetchDxfData,
+  fetchFileList,
+  uploadCadFile,
+} from './api/dxf.js'
 
 const loading = ref(true)
 const error = ref('')
@@ -134,6 +163,11 @@ const dxfData = ref(null)
 const files = ref(['Drawing1.dxf'])
 const currentFile = ref('Drawing1.dxf')
 const fileListHint = ref('')
+const uploadHint = ref('')
+const uploading = ref(false)
+const autoConvertDwg = ref(true)
+const converterAvailable = ref(false)
+const fileInputRef = ref(null)
 const mode = ref('layer')
 const hiddenLayers = ref([])
 const hiddenBlocks = ref([])
@@ -241,6 +275,9 @@ async function reloadFileList() {
   try {
     const list = await fetchFileList()
     const next = list.files ?? []
+    if (typeof list.converterAvailable === 'boolean') {
+      converterAvailable.value = list.converterAvailable
+    }
     const changed = !sameFileList(files.value, next)
     if (next.length) files.value = next
     if (!files.value.includes(currentFile.value)) {
@@ -258,9 +295,61 @@ async function reloadFileList() {
   }
 }
 
+async function onFileSelected(ev) {
+  const input = ev.target
+  const file = input.files?.[0]
+  if (!file) return
+
+  const ext = file.name.toLowerCase().split('.').pop()
+  if (ext !== 'dxf' && ext !== 'dwg') {
+    uploadHint.value = '仅支持 .dxf 与 .dwg 文件'
+    input.value = ''
+    return
+  }
+
+  if (ext === 'dwg' && autoConvertDwg.value && !converterAvailable.value) {
+    uploadHint.value = '请先安装 ODA File Converter，或取消勾选自动转换后仅保存 DWG'
+    input.value = ''
+    return
+  }
+
+  uploading.value = true
+  uploadHint.value = ''
+  try {
+    const result = await uploadCadFile(file, {
+      convert: ext === 'dwg' ? autoConvertDwg.value : false,
+    })
+    await reloadFileList()
+    if (result.dxfFile) {
+      currentFile.value = result.dxfFile
+      await loadDxf()
+      uploadHint.value = result.converted
+        ? `已上传并转换：${result.dxfFile}`
+        : `已上传：${result.savedAs}`
+    } else {
+      uploadHint.value = result.message || `已保存：${result.savedAs}`
+    }
+  } catch (e) {
+    uploadHint.value = e.message
+  } finally {
+    uploading.value = false
+    input.value = ''
+  }
+}
+
+async function loadConverterStatus() {
+  try {
+    const st = await fetchConverterStatus()
+    converterAvailable.value = !!st.available
+  } catch {
+    converterAvailable.value = false
+  }
+}
+
 let fileListPollTimer = null
 
 onMounted(async () => {
+  await loadConverterStatus()
   await reloadFileList()
   await loadDxf()
   fileListPollTimer = setInterval(() => {
@@ -341,6 +430,60 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: #d29922;
   line-height: 1.4;
+}
+
+.upload-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid #21262d;
+}
+
+.upload-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.upload-btn {
+  display: block;
+  text-align: center;
+  padding: 8px 10px;
+  border: 1px dashed #30363d;
+  border-radius: 6px;
+  background: #0d1117;
+  color: #58a6ff;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.upload-btn:hover {
+  border-color: #58a6ff;
+  background: #161b22;
+}
+
+.upload-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: #8b949e;
+  cursor: pointer;
+}
+.upload-option input {
+  accent-color: #1f6feb;
+}
+
+.upload-warn {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #8b949e;
+  line-height: 1.45;
+}
+.upload-warn a {
+  color: #58a6ff;
 }
 
 .panel select,

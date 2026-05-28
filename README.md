@@ -37,6 +37,7 @@
 ## 功能特性
 
 - **DXF 解析**：后端读取 `dxf/` 目录下的 `.dxf`，导出图层、块定义、模型空间实体与包围盒
+- **DWG 支持**：上传 `.dwg` 可勾选自动转换；提供 `scripts/dwg_to_dxf.py` 批量转 DXF
 - **多级缓存**：内存缓存 + `backend/.cache/dxf/` 磁盘缓存，大文件二次加载显著加速
 - **Canvas 渲染**：线段、多段线、圆、弧、填充、文字、块引用（含嵌套块展开）等
 - **图层 / 块控制**：左侧列表切换可见性，支持搜索与批量显示/隐藏
@@ -60,8 +61,11 @@ test/
 │   ├── Drawing2.dxf
 │   ├── 会所强弱电、水位图.dxf
 │   └── 餐厅装修施工图.dxf
+├── scripts/
+│   └── dwg_to_dxf.py                 # 批量 DWG → DXF（需 ODA File Converter）
 ├── backend/
-│   ├── app.py                        # FastAPI 路由、CORS、GZip
+│   ├── app.py                        # FastAPI 路由、上传、CORS、GZip
+│   ├── dwg_convert.py                # DWG→DXF（ezdxf odafc / ODA）
 │   ├── dxf_parser.py                 # ezdxf 解析 → JSON（PARSER_VERSION）
 │   ├── dxf_cache.py                  # 解析结果磁盘缓存
 │   ├── requirements.txt
@@ -81,7 +85,7 @@ test/
             └── EyeToggle.vue         # 眼睛图标切换
 ```
 
-> **说明**：本查看器只读取 **`.dxf`**，不能直接打开 `.dwg`。若手头是 DWG，请在 CAD 中另存为或导出 DXF（见下文）。
+> **说明**：查看器解析 **`.dxf`**。项目支持 **`.dwg` 上传并自动转为 DXF**（需安装免费的 [ODA File Converter](https://www.opendesign.com/guestfiles/oda_file_converter)），也可在 CAD 中手动导出 DXF，或使用命令行脚本 `scripts/dwg_to_dxf.py` 批量转换。
 
 ## 环境要求
 
@@ -147,6 +151,7 @@ curl "http://127.0.0.1:8000/api/dxf/parse?file=Drawing1.dxf"
 | 操作 | 说明 |
 |------|------|
 | 选择文件 | 左侧下拉框切换 `dxf/` 目录中的 DXF |
+| 上传图纸 | 点击「上传 DXF / DWG」；DWG 可勾选「自动转为 DXF」（需 ODA File Converter） |
 | 刷新列表 | 点击「刷新列表」；页面也会每 4 秒自动检测 `dxf/` 目录变化 |
 | 图层 / 块 | 切换 Tab，点击眼睛图标显示或隐藏 |
 | 搜索 | 在列表上方输入关键字过滤名称 |
@@ -162,13 +167,47 @@ curl "http://127.0.0.1:8000/api/dxf/parse?file=Drawing1.dxf"
 - 图层与块规则**同时生效**（例如块已显示但所在图层被隐藏，仍不绘制）
 - 加载 DXF 时，CAD 中**关闭**的图层（`on: false`）会默认在查看器中隐藏
 
+## DWG 转 DXF（无需打开 CAD）
+
+### 安装 ODA File Converter
+
+1. 打开 [ODA File Converter 下载页](https://www.opendesign.com/guestfiles/oda_file_converter) 安装（Windows / macOS / Linux）。
+2. Windows 默认路径：`C:\Program Files\ODA\ODAFileConverter\ODAFileConverter.exe`。
+3. 若安装在其他位置，可设置环境变量 `ODAFC_WIN_EXEC_PATH` 指向该 exe（或在 ezdxf 配置中设置 `odafc-addon` → `win_exec_path`）。
+4. 启动后端后访问 `GET /api/converter/status`，`available: true` 表示可自动转换。
+
+### 方式一：页面上传（推荐）
+
+1. 左侧 **上传 DXF / DWG**，选择本地 `.dwg` 或 `.dxf`。
+2. 勾选 **DWG 自动转为 DXF**（默认开启）；上传成功后下拉框会出现同名 `.dxf` 并自动加载。
+3. 若未安装转换器，仍可上传 **DXF**；DWG 可先保存，再用下方脚本转换。
+
+### 方式二：命令行批量转换
+
+```bash
+# 转换 dxf/ 目录下全部 .dwg
+python scripts/dwg_to_dxf.py
+
+# 转换单个文件
+python scripts/dwg_to_dxf.py "dxf/某图纸.dwg"
+
+# 指定 DXF 版本（默认 ACAD2010，可用环境变量 DXF_DWG_VERSION）
+python scripts/dwg_to_dxf.py --version ACAD2007
+```
+
+### 方式三：在 CAD 中手动导出
+
+见下文「从 CAD 导出 DXF」。
+
+---
+
 ## 从 CAD 导出 DXF
 
 ### 导出前须知
 
 | 项目 | 建议 |
 |------|------|
-| 文件格式 | 使用 **DXF**（`.dxf`），不要用 DWG 直接放入项目 |
+| 文件格式 | 优先 **DXF**（`.dxf`）；或使用本项目的 **DWG 上传/脚本转换** |
 | DXF 版本 | **AutoCAD 2007 / 2010 / 2018 DXF** 均可；优先 **2010 或 2007**（兼容性好） |
 | 编码 | 优先 **ASCII DXF**；二进制 DXF 一般也能解析，但排查问题较难 |
 | 导出空间 | 导出 **模型空间（Model）** 中的内容；仅布局/图纸空间的内容可能看不到 |
@@ -265,7 +304,9 @@ SAVEAS
 | 接口 | 说明 |
 |------|------|
 | `GET /api/health` | 健康检查 |
-| `GET /api/files` | 列出 `dxf/` 下所有 `.dxf`；返回 `files`、`default`、`dxfDir`、`scannedAt` |
+| `GET /api/files` | 列出 `dxf/` 下 `.dxf`；含 `dwgFiles`、`converterAvailable` |
+| `GET /api/converter/status` | ODA File Converter 是否可用 |
+| `POST /api/upload?convert=true` | 上传 `.dxf` / `.dwg`（multipart `file`）；DWG 可自动转 DXF |
 | `GET /api/dxf/parse?file=Drawing1.dxf` | 解析指定 DXF（仅文件名，不含路径） |
 
 **`GET /api/files` 示例**
@@ -421,6 +462,12 @@ Vue  App.vue ──→  DxfCanvas.vue
 
 - 查看响应 `detail` 字段；常见原因为 DXF 损坏、版本过新或含不支持对象
 - 在 CAD 中另存为 **DXF 2007/2010 ASCII** 后重试
+
+**上传 DWG 失败或提示未安装转换器**
+
+- 安装 [ODA File Converter](https://www.opendesign.com/guestfiles/oda_file_converter) 后重启后端
+- 检查 `GET /api/converter/status` 中 `available` 是否为 `true`
+- 或取消勾选自动转换，仅保存 DWG，再运行 `python scripts/dwg_to_dxf.py`
 
 **文字显示异常**
 
