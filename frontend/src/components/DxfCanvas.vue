@@ -18,12 +18,17 @@ import {
   computeGridCellSize,
   SpatialGrid,
   bboxIntersects,
+  attributeEntryKey,
+  attributesMatchFilter,
 } from '../utils/geometry.js'
 
 const props = defineProps({
   data: { type: Object, default: null },
   hiddenLayers: { type: Array, default: () => [] },
   hiddenBlocks: { type: Array, default: () => [] },
+  hiddenAttributeKeys: { type: Array, default: () => [] },
+  attributeFilter: { type: String, default: '' },
+  attributeFilterOnly: { type: Boolean, default: false },
 })
 
 const canvasRef = ref(null)
@@ -42,12 +47,14 @@ let expandedEntities = []
 let spatialGrid = null
 let hiddenLayerSet = new Set()
 let hiddenBlockSet = new Set()
+let hiddenAttributeSet = new Set()
 let prepareWorker = null
 let prepareJobId = 0
 
 function syncHiddenSets() {
   hiddenLayerSet = new Set(props.hiddenLayers)
   hiddenBlockSet = new Set(props.hiddenBlocks)
+  hiddenAttributeSet = new Set(props.hiddenAttributeKeys)
 }
 
 function finishPrepare(drawn) {
@@ -216,6 +223,19 @@ function isEntityVisible(entity, insertRef) {
   const blockName = insertRef?.block
   if (blockName && hiddenBlockSet.has(blockName)) return false
   if (insertRef?.layer && hiddenLayerSet.has(insertRef.layer)) return false
+
+  const attrs = insertRef?.attributes
+  if (attrs && hiddenAttributeSet.size) {
+    for (const [tag, val] of Object.entries(attrs)) {
+      if (hiddenAttributeSet.has(attributeEntryKey(tag, val))) return false
+    }
+  }
+
+  const filterQ = (props.attributeFilter || '').trim()
+  if (filterQ && props.attributeFilterOnly) {
+    if (!attrs || !attributesMatchFilter(attrs, filterQ)) return false
+  }
+
   return true
 }
 
@@ -477,7 +497,13 @@ watch(
 )
 
 watch(
-  () => [props.hiddenLayers, props.hiddenBlocks],
+  () => [
+    props.hiddenLayers,
+    props.hiddenBlocks,
+    props.hiddenAttributeKeys,
+    props.attributeFilter,
+    props.attributeFilterOnly,
+  ],
   () => {
     syncHiddenSets()
     scheduleRender()

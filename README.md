@@ -1,5 +1,9 @@
 # DXF 图层 / 块查看器
 
+项目地址：[YQisme/cad_view](https://github.com/YQisme/cad_view)
+
+---
+
 基于 **ezdxf** 解析 AutoCAD DXF 图纸，**FastAPI** 提供几何 JSON 数据，**Vue 3 + Canvas 2D** 在浏览器中渲染，并通过眼睛图标控制图层与块的显示/隐藏。
 
 适用于建筑、机电、弱电等 CAD 图纸的快速预览与图层筛选，**无需安装 AutoCAD**；在 CAD 中导出 DXF 后放入 `dxf/` 目录即可使用。

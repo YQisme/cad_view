@@ -14,8 +14,12 @@ export function transformPoint([x, y], insert) {
   ]
 }
 
-/** 合并嵌套块 INSERT 变换（先 inner 后 outer） */
+/** 合并嵌套块 INSERT 变换（先 inner 后 outer）；属性由内层覆盖同名标签 */
 export function combineInsert(outer, inner) {
+  const outerAttrs = outer.attributes
+  const innerAttrs = inner.attributes
+  const attributes =
+    outerAttrs || innerAttrs ? { ...(outerAttrs || {}), ...(innerAttrs || {}) } : undefined
   return {
     ...inner,
     block: inner.block,
@@ -26,7 +30,39 @@ export function combineInsert(outer, inner) {
       (inner.scale?.[0] ?? 1) * (outer.scale?.[0] ?? 1),
       (inner.scale?.[1] ?? 1) * (outer.scale?.[1] ?? 1),
     ],
+    ...(attributes && Object.keys(attributes).length ? { attributes } : {}),
   }
+}
+
+/** 块属性筛选项键：tag + 分隔符 + value */
+export function attributeEntryKey(tag, value) {
+  return `${tag}\x1f${value}`
+}
+
+/** 判断 INSERT 属性是否匹配筛选串（支持 tag=value 或全文模糊） */
+export function attributesMatchFilter(attributes, query) {
+  const q = (query || '').trim()
+  if (!q || !attributes || !Object.keys(attributes).length) return !q
+
+  if (q.includes('=')) {
+    const eq = q.indexOf('=')
+    const tag = q.slice(0, eq).trim()
+    const val = q.slice(eq + 1).trim().toLowerCase()
+    if (!tag) {
+      return Object.values(attributes).some((v) =>
+        String(v).toLowerCase().includes(val),
+      )
+    }
+    const actual = attributes[tag]
+    if (actual == null) return false
+    return String(actual).toLowerCase().includes(val)
+  }
+
+  const lower = q.toLowerCase()
+  return Object.entries(attributes).some(
+    ([t, v]) =>
+      t.toLowerCase().includes(lower) || String(v).toLowerCase().includes(lower),
+  )
 }
 
 export function transformEntity(entity, insert) {

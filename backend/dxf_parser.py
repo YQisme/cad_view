@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from typing import Any
 
 import ezdxf
@@ -10,7 +11,7 @@ from ezdxf.entities import DXFEntity
 from ezdxf.layouts import BlockLayout
 from ezdxf.path import from_hatch_boundary_path, make_path
 
-PARSER_VERSION = "3"
+PARSER_VERSION = "4"
 
 
 def _aci_to_hex(aci: int) -> str:
@@ -218,7 +219,7 @@ def _parse_entity(
             return None
     if t == "INSERT":
         ins = entity.dxf.insert
-        return {
+        out: dict[str, Any] = {
             **base,
             "type": "insert",
             "block": entity.dxf.name,
@@ -229,6 +230,10 @@ def _parse_entity(
                 float(getattr(entity.dxf, "yscale", 1) or 1),
             ],
         }
+        attrs = _extract_insert_attributes(entity)
+        if attrs:
+            out["attributes"] = attrs
+        return out
     if t == "TEXT":
         ins = entity.dxf.insert
         align_pt = getattr(entity.dxf, "align_point", None)
@@ -325,6 +330,74 @@ def _parse_layout(
     for entity in layout:
         entities.extend(_parse_entity_exports(entity, doc, layer_colors))
     return entities
+
+
+def _extract_insert_attributes(entity: DXFEntity) -> dict[str, str]:
+    """读取 INSERT 上的 ATTRIB（块引用属性值）。"""
+    if entity.dxftype() != "INSERT":
+        return {}
+    out: dict[str, str] = {}
+    try:
+        for attrib in entity.attribs:
+            tag = str(attrib.dxf.tag).strip()
+            if not tag:
+                continue
+            out[tag] = str(attrib.dxf.text).strip()
+    except Exception:
+        pass
+    return out
+
+
+def _collect_attribute_catalog(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """汇总模型空间中带属性块实例的标签与取值。"""
+    value_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for entity in entities:
+        if entity.get("type") != "insert":
+            continue
+        attrs = entity.get("attributes")
+        if not attrs:
+            continue
+        for tag, value in attrs.items():
+            value_counts[tag][value] += 1
+
+    catalog: list[dict[str, Any]] = []
+    for tag in sorted(value_counts.keys()):
+        values = [
+            {"value": val, "count": cnt}
+            for val, cnt in sorted(
+                value_counts[tag].items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+        catalog.append(
+            {
+                "tag": tag,
+                "values": values,
+                "insertCount": sum(value_counts[tag].values()),
+            }
+        )
+    return catalog
+
+
+def _collect_block_attribute_defs(
+    doc: ezdxf.document.Drawing, needed_blocks: set[str]
+) -> dict[str, list[str]]:
+    """块定义内的 ATTDEF 标签（属性块模板）。"""
+    defs: dict[str, list[str]] = {}
+    for block in doc.blocks:
+        name = block.name
+        if name.startswith("*") or name not in needed_blocks:
+            continue
+        tags: list[str] = []
+        for entity in block:
+            if entity.dxftype() != "ATTDEF":
+                continue
+            tag = str(entity.dxf.tag).strip()
+            if tag and tag not in tags:
+                tags.append(tag)
+        if tags:
+            defs[name] = tags
+    return defs
 
 
 def _collect_referenced_blocks(
@@ -529,16 +602,21 @@ def parse_dxf_file(path: str) -> dict[str, Any]:
 
     entities = _parse_layout(msp, doc, layer_colors)
     bounds = _compute_world_bounds(entities, block_defs)
+    block_attributes = _collect_attribute_catalog(entities)
+    block_attribute_defs = _collect_block_attribute_defs(doc, needed_blocks)
 
     return {
         "bounds": bounds,
         "layers": layers,
         "blocks": sorted(blocks),
         "blockDefinitions": block_defs,
+        "blockAttributes": block_attributes,
+        "blockAttributeDefs": block_attribute_defs,
         "entities": entities,
         "stats": {
             "entityCount": len(entities),
             "layerCount": len(layers),
             "blockCount": len(blocks),
+            "attributeTagCount": len(block_attributes),
         },
     }

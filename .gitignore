@@ -1,3 +1,4 @@
 Drawing1.dxf
 Drawing2.dxf
 backend/.cache/
+*.pyc

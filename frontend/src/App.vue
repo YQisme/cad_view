@@ -3,7 +3,7 @@
     <aside class="sidebar">
       <header class="sidebar-header">
         <h1>DXF 查看器</h1>
-        <p class="subtitle">ezdxf 解析 · 图层 / 块显示控制</p>
+        <p class="subtitle">ezdxf 解析 · 图层 / 块 / 属性显示控制</p>
       </header>
 
       <section v-if="loading" class="status">正在加载 DXF…</section>
@@ -49,6 +49,9 @@
           <span>实体 {{ dxfData.stats.entityCount }}</span>
           <span>图层 {{ dxfData.stats.layerCount }}</span>
           <span>块 {{ dxfData.stats.blockCount }}</span>
+          <span v-if="dxfData.stats.attributeTagCount">
+            属性 {{ dxfData.stats.attributeTagCount }}
+          </span>
         </section>
 
         <section class="panel">
@@ -73,6 +76,13 @@
               @click="mode = 'block'"
             >
               块
+            </button>
+            <button
+              type="button"
+              :class="{ active: mode === 'attribute' }"
+              @click="mode = 'attribute'"
+            >
+              属性
             </button>
           </div>
         </section>
@@ -101,7 +111,7 @@
           </ul>
         </section>
 
-        <section class="panel list-panel" v-else>
+        <section class="panel list-panel" v-else-if="mode === 'block'">
           <label>块可见性</label>
           <div class="search">
             <input v-model="blockFilter" placeholder="搜索块名…" />
@@ -121,6 +131,59 @@
           </ul>
         </section>
 
+        <section class="panel list-panel" v-else>
+          <label>块属性</label>
+          <div class="search">
+            <input
+              v-model="attributeFilter"
+              placeholder="筛选：标签或 标签=值 …"
+            />
+          </div>
+          <label class="filter-only">
+            <input v-model="attributeFilterOnly" type="checkbox" />
+            <span>仅显示匹配属性的块实例</span>
+          </label>
+          <p v-if="!filteredAttributeCatalog.length" class="empty-hint">
+            当前图纸模型空间无带属性块实例
+          </p>
+          <ul v-else class="item-list attr-list">
+            <template v-for="group in filteredAttributeCatalog" :key="group.tag">
+              <li class="attr-tag-row">
+                <span class="attr-tag">{{ group.tag }}</span>
+                <span class="count">{{ group.insertCount }}</span>
+              </li>
+              <li
+                v-for="entry in group.values"
+                :key="attributeEntryKey(group.tag, entry.value)"
+                :class="{
+                  'is-hidden': isAttributeHidden(group.tag, entry.value),
+                }"
+              >
+                <EyeToggle
+                  :visible="!isAttributeHidden(group.tag, entry.value)"
+                  @toggle="toggleAttributeVisibility(group.tag, entry.value)"
+                />
+                <span class="name attr-value">{{
+                  formatAttributeValue(entry.value)
+                }}</span>
+                <span class="count">{{ entry.count }}</span>
+              </li>
+            </template>
+          </ul>
+          <details
+            v-if="attributeDefBlocks.length"
+            class="attr-defs"
+          >
+            <summary>块定义中的属性标签（ATTDEF）</summary>
+            <ul class="def-list">
+              <li v-for="item in attributeDefBlocks" :key="item.block">
+                <span class="def-block">{{ item.block }}</span>
+                <span class="def-tags">{{ item.tags.join(' · ') }}</span>
+              </li>
+            </ul>
+          </details>
+        </section>
+
         <section class="hint">
           <EyeToggle :visible="true" class="hint-eye" />
           <span>显示</span>
@@ -137,6 +200,9 @@
         :data="dxfData"
         :hidden-layers="hiddenLayers"
         :hidden-blocks="hiddenBlocks"
+        :hidden-attribute-keys="hiddenAttributeKeys"
+        :attribute-filter="attributeFilter"
+        :attribute-filter-only="attributeFilterOnly"
       />
       <div v-else-if="!loading && !error" class="placeholder">请选择 DXF 文件</div>
       <div class="toolbar" v-if="dxfData">
@@ -156,6 +222,7 @@ import {
   fetchFileList,
   uploadCadFile,
 } from './api/dxf.js'
+import { attributeEntryKey } from './utils/geometry.js'
 
 const loading = ref(true)
 const error = ref('')
@@ -173,6 +240,9 @@ const hiddenLayers = ref([])
 const hiddenBlocks = ref([])
 const layerFilter = ref('')
 const blockFilter = ref('')
+const attributeFilter = ref('')
+const attributeFilterOnly = ref(false)
+const hiddenAttributeKeys = ref([])
 const canvasRef = ref(null)
 
 const layerEntityCounts = computed(() => {
@@ -207,6 +277,55 @@ const filteredBlocks = computed(() => {
   return dxfData.value.blocks.filter((b) => !q || b.toLowerCase().includes(q))
 })
 
+const filteredAttributeCatalog = computed(() => {
+  const catalog = dxfData.value?.blockAttributes
+  if (!catalog?.length) return []
+  const q = attributeFilter.value.trim().toLowerCase()
+  if (!q) return catalog
+
+  let filterTag = ''
+  let filterVal = ''
+  if (q.includes('=')) {
+    const eq = q.indexOf('=')
+    filterTag = q.slice(0, eq).trim()
+    filterVal = q.slice(eq + 1).trim()
+  }
+
+  return catalog
+    .map((group) => {
+      const tagMatch = !filterTag || group.tag.toLowerCase().includes(filterTag)
+      if (!tagMatch) return null
+      const values = group.values.filter((entry) => {
+        const val = String(entry.value).toLowerCase()
+        const label = formatAttributeValue(entry.value).toLowerCase()
+        if (filterVal) return val.includes(filterVal) || label.includes(filterVal)
+        return (
+          group.tag.toLowerCase().includes(q) ||
+          val.includes(q) ||
+          label.includes(q)
+        )
+      })
+      if (!values.length) return null
+      return { ...group, values, insertCount: values.reduce((s, v) => s + v.count, 0) }
+    })
+    .filter(Boolean)
+})
+
+const attributeDefBlocks = computed(() => {
+  const defs = dxfData.value?.blockAttributeDefs
+  if (!defs) return []
+  const q = blockFilter.value.trim().toLowerCase()
+  return Object.entries(defs)
+    .map(([block, tags]) => ({ block, tags }))
+    .filter((item) => !q || item.block.toLowerCase().includes(q))
+    .sort((a, b) => a.block.localeCompare(b.block, 'zh-CN'))
+})
+
+function formatAttributeValue(value) {
+  const s = String(value ?? '').trim()
+  return s === '' ? '(空)' : s
+}
+
 function isLayerHidden(name) {
   return hiddenLayers.value.includes(name)
 }
@@ -227,11 +346,36 @@ function toggleBlockVisibility(name) {
   else hiddenBlocks.value.push(name)
 }
 
+function isAttributeHidden(tag, value) {
+  return hiddenAttributeKeys.value.includes(attributeEntryKey(tag, value))
+}
+
+function toggleAttributeVisibility(tag, value) {
+  const key = attributeEntryKey(tag, value)
+  const i = hiddenAttributeKeys.value.indexOf(key)
+  if (i >= 0) hiddenAttributeKeys.value.splice(i, 1)
+  else hiddenAttributeKeys.value.push(key)
+}
+
+function allAttributeKeys() {
+  const keys = []
+  for (const group of dxfData.value?.blockAttributes || []) {
+    for (const entry of group.values) {
+      keys.push(attributeEntryKey(group.tag, entry.value))
+    }
+  }
+  return keys
+}
+
 function showAll() {
   if (mode.value === 'layer') {
     hiddenLayers.value = []
-  } else {
+  } else if (mode.value === 'block') {
     hiddenBlocks.value = []
+  } else {
+    hiddenAttributeKeys.value = []
+    attributeFilter.value = ''
+    attributeFilterOnly.value = false
   }
 }
 
@@ -240,6 +384,8 @@ function hideAll() {
     hiddenLayers.value = dxfData.value.layers.map((l) => l.name)
   } else if (mode.value === 'block' && dxfData.value?.blocks) {
     hiddenBlocks.value = [...dxfData.value.blocks]
+  } else {
+    hiddenAttributeKeys.value = allAttributeKeys()
   }
 }
 
@@ -257,6 +403,9 @@ async function loadDxf() {
       .filter((l) => l.on === false)
       .map((l) => l.name)
     hiddenBlocks.value = []
+    hiddenAttributeKeys.value = []
+    attributeFilter.value = ''
+    attributeFilterOnly.value = false
   } catch (e) {
     error.value = e.message
     dxfData.value = null
@@ -511,7 +660,8 @@ onUnmounted(() => {
 
 .mode-tabs button {
   flex: 1;
-  padding: 8px;
+  padding: 6px 4px;
+  font-size: 0.8rem;
   border: 1px solid #30363d;
   border-radius: 6px;
   background: #0d1117;
@@ -578,6 +728,74 @@ onUnmounted(() => {
   font-size: 0.7rem;
   color: #6e7681;
   font-variant-numeric: tabular-nums;
+}
+
+.filter-only {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #8b949e;
+  cursor: pointer;
+  line-height: 1.35;
+}
+.filter-only input {
+  margin-top: 2px;
+  accent-color: #1f6feb;
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #6e7681;
+}
+
+.attr-list .attr-tag-row {
+  background: #161b22;
+  font-weight: 600;
+  cursor: default;
+  padding: 6px 10px;
+}
+.attr-tag {
+  flex: 1;
+  color: #58a6ff;
+  font-size: 0.8rem;
+}
+.attr-value {
+  font-size: 0.82rem;
+}
+
+.attr-defs {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #8b949e;
+}
+.attr-defs summary {
+  cursor: pointer;
+  color: #8b949e;
+}
+.def-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.def-list li {
+  padding: 4px 0;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.def-block {
+  color: #c9d1d9;
+  font-size: 0.78rem;
+}
+.def-tags {
+  color: #6e7681;
+  font-size: 0.72rem;
+  word-break: break-all;
 }
 
 .link {
